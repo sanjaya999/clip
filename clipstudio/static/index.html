@@ -17,6 +17,11 @@
     <nav class="pages" data-nav aria-label="Pages"></nav>
     <div class="source">
       <input type="text" id="urlInput" class="field" placeholder="Paste a YouTube, Twitch or Kick link" aria-label="Video link">
+      <select id="loadModeSelect" class="field load-mode" aria-label="How to load the video"
+        title="Download saves the whole video first. Stream reads it from the platform and saves only your clips.">
+        <option value="download">Download</option>
+        <option value="stream">Stream</option>
+      </select>
       <button id="loadBtn" class="btn btn-primary">Load video</button>
       <button id="fetchCcTopBtn" class="btn">Get captions</button>
       <button id="clearBtn" class="btn" title="Clear the video, subtitles and moments">Clear</button>

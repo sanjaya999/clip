@@ -44,6 +44,12 @@ export const getVideoInfo = (url) => sendJson('POST', '/api/info', { url }, 'Cou
 /** @returns {Promise<{video_id: string, stream_url: string}>} */
 export const downloadVideo = (url) => sendJson('POST', '/api/download', { url }, 'Download failed');
 
+/**
+ * Open a video for streaming instead of downloading it. `stream_url` is an HLS playlist the server cuts on request.
+ * @returns {Promise<{video_id: string, stream_url: string, duration: number}>}
+ */
+export const openStream = (url) => sendJson('POST', '/api/stream', { url }, 'Could not open the stream');
+
 /** @returns {Promise<{video_id: string, captions: CaptionSegment[]}>} */
 export const getCaptions = (url) => sendJson('POST', '/api/captions', { url }, 'Could not fetch subtitles');
 

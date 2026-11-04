@@ -12,6 +12,12 @@ class Platform(StrEnum):
     KICK = "kick"
 
 
+class MediaMode(StrEnum):
+    """How the editor reads a video: a downloaded file, or the platform's stream with nothing saved but clips."""
+    DOWNLOAD = "download"
+    STREAM = "stream"
+
+
 class AIProvider(StrEnum):
     AUTO = "auto"
     CLAUDE = "claude"
@@ -107,6 +113,7 @@ class ClipRequest(BaseModel):
     end_time: float = Field(ge=0.0)
     filename: str | None = Field(default=None, pattern=r"^[\w.-]+$")
     captions: list[CaptionSegment] = []
+    mode: MediaMode = MediaMode.DOWNLOAD
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "ClipRequest":

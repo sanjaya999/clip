@@ -5,6 +5,7 @@
   max-width: 820px;
 }
 .source .field { flex: 1; }
+.source .load-mode { flex: none; }
 
 .editor {
   display: flex;
@@ -323,6 +324,7 @@
 @media (max-width: 640px) {
   .source { flex-wrap: wrap; flex-basis: 100%; }
   .source .field { flex-basis: 100%; }
+  .source .load-mode { flex: 1; flex-basis: auto; }
   .readout { gap: 1.5rem; }
   .timecode { font-size: 1.5rem; }
   .transport .btn-primary { flex-basis: 100%; }

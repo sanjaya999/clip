@@ -1,13 +1,18 @@
 import {
   createClip, createRun, findHighlights, forgetProviderSettings, getCaptions, getPipelines, getVideoInfo,
-  downloadVideo, listProviders, listRuns, saveProviderSettings,
+  downloadVideo, listProviders, listRuns, openStream, saveProviderSettings,
 } from './api.js';
 import { readAiPrefs, saveAiPrefs } from './ai-prefs.js';
 import { forgetWork, pageWasReloaded, readWork, saveWork } from './editor-work.js';
 import { countOf, escapeHtml, formatTime, renderNav, showMessage } from './ui.js';
 import { pipelineOptions, showActiveRunCount, trackRunUrl } from './widgets.js';
+import { playSource, stopSource } from './stream-player.js';
 
-/** @type {{url: string, videoId: string, streamUrl: string, title: string, platform: string, duration: number}|null} */
+/**
+ * `mode` is 'download' for a video saved in storage/media, or 'stream' for one read from the platform as it plays.
+ * @type {{url: string, videoId: string, streamUrl: string, title: string, platform: string, duration: number,
+ *   mode: 'download'|'stream'}|null}
+ */
 let currentVideo = null;
 let videoDuration = 0;
 let clipStart = 0;
@@ -29,6 +34,7 @@ const videoPlayer = document.getElementById('videoPlayer');
 const placeholderView = document.getElementById('placeholderView');
 const urlInput = document.getElementById('urlInput');
 const loadBtn = document.getElementById('loadBtn');
+const loadModeSelect = document.getElementById('loadModeSelect');
 const fetchCcTopBtn = document.getElementById('fetchCcTopBtn');
 const loadStatus = document.getElementById('loadStatus');
 const startSlider = document.getElementById('startSlider');
@@ -116,11 +122,12 @@ async function loadVideo() {
     videoDuration = info.duration || 100;
     showVideoMeta(info.title, info.platform, info.duration);
 
-    setStatus('Downloading video…', true);
-    const dlData = await downloadVideo(url);
+    const mode = loadModeSelect.value === 'stream' ? 'stream' : 'download';
+    setStatus(mode === 'stream' ? 'Opening stream…' : 'Downloading video…', true);
+    const loaded = mode === 'stream' ? await openStream(url) : await downloadVideo(url);
     currentVideo = {
-      url, videoId: info.video_id, streamUrl: dlData.stream_url,
-      title: info.title, platform: info.platform, duration: info.duration,
+      url, videoId: info.video_id, streamUrl: loaded.stream_url,
+      title: info.title, platform: info.platform, duration: info.duration, mode,
     };
     showVideo(currentVideo);
     rememberWork();
@@ -145,15 +152,18 @@ function showVideo(video, restoring = false) {
   showVideoMeta(video.title, video.platform, video.duration);
   placeholderView.hidden = true;
   videoPlayer.hidden = false;
-  videoPlayer.onerror = restoring ? () => {
+  const lost = () => {
     if (currentVideo !== video) return;
     resetWork();
     forgetWork();
     setStatus('Link not loaded');
-    showLoadError('The saved video is no longer on the server. Choose Load video to fetch it again.');
-  } : null;
-  videoPlayer.src = video.streamUrl;
-  videoPlayer.load();
+    showLoadError(video.mode === 'stream'
+      ? 'The stream stopped or is no longer open on the server. Choose Load video to open it again.'
+      : 'The saved video is no longer on the server. Choose Load video to fetch it again.');
+  };
+  // A stream played through hls.js reports its own errors, so it always needs the handler.
+  videoPlayer.onerror = restoring ? lost : null;
+  playSource(videoPlayer, video.streamUrl, lost);
 
   videoPlayer.onloadedmetadata = () => {
     videoDuration = videoPlayer.duration || videoDuration;
@@ -181,8 +191,7 @@ function resetWork() {
   videoPlayer.pause();
   videoPlayer.onloadedmetadata = null;
   videoPlayer.onerror = null;
-  videoPlayer.removeAttribute('src');
-  videoPlayer.load();
+  stopSource(videoPlayer);
   videoPlayer.hidden = true;
   placeholderView.hidden = false;
   videoMetaHeader.hidden = true;
@@ -214,6 +223,7 @@ function rememberWork() {
     ? { start: clipStart, end: clipEnd, playhead: videoPlayer.currentTime } : null);
   const work = {
     url: urlInput.value,
+    loadMode: loadModeSelect.value,
     video: currentVideo,
     range,
     captions: allCaptions,
@@ -238,6 +248,7 @@ function restoreWork() {
   const work = readWork();
   if (!work) return;
   urlInput.value = work.url || '';
+  loadModeSelect.value = work.loadMode === 'stream' ? 'stream' : 'download';
   aiQueryInput.value = work.query || '';
   pendingSendTo = work.sendTo || null;
   switchTab(work.tab === 'captions' ? 'captions' : 'highlights');
@@ -656,8 +667,11 @@ async function exportClip() {
 
   const pipeline = pipelines.find((p) => p.id === sendToSelect.value);
   exportBtn.disabled = true;
-  const body = { video_id: currentVideo.videoId, start_time: clipStart, end_time: clipEnd, captions: allCaptions };
-  setStatus('Exporting clip…', true);
+  const body = {
+    video_id: currentVideo.videoId, start_time: clipStart, end_time: clipEnd, captions: allCaptions,
+    mode: currentVideo.mode || 'download',
+  };
+  setStatus(currentVideo.mode === 'stream' ? 'Cutting the clip from the stream…' : 'Exporting clip…', true);
 
   let clip;
   try {

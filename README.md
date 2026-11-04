@@ -4,6 +4,15 @@ Cut short clips from YouTube, Twitch and Kick videos. Pick the range by hand, or
 
 Every exported clip is kept in a library. Send a clip into a pipeline from the editor's "Then send to" menu or from the Pipeline page, and follow each step there until it finishes. A pipeline's output is a new clip, so you can send it on to another pipeline. The first pipeline, Context hook, has an AI write one line from the clip's subtitles and draws it over the first 2 seconds.
 
+## Download or stream
+
+The menu next to "Load video" picks how the editor reads a video:
+
+- **Download** saves the whole video to `storage/media` first, at up to 720p. Preview and export then run from that file.
+- **Stream** saves nothing but your clips. The preview plays the platform's own 480p stream through the server, and each export seeks into the full stream and fetches only the clip's part, at up to 1080p. Use it for long VODs: a 15-second clip from an 8-hour Twitch VOD takes about half a minute instead of a 13 GB download.
+
+Stream mode needs the internet while you work, and the preview loads hls.js from jsDelivr. A streamed video stays open on the server until it restarts. After a restart, choose Load video again.
+
 ## Requirements
 
 - Python 3.11 or newer
@@ -41,7 +50,7 @@ uv pip install --python .venv/bin/python pytest
 
 - `clipstudio/` is the app: routes and the pipeline worker in `app.py`, pipelines in `pipelines.py`, and the editor and Pipeline pages in `static/`.
 - `tests/` holds the pytest suite.
-- `storage/` holds downloaded videos, exported clips, and a SQLite file with the clip library, the runs and saved AI settings. Git ignores its contents.
+- `storage/` holds downloaded videos (Download mode only), exported clips, and a SQLite file with the clip library, the runs and saved AI settings. Git ignores its contents.
 
 ## Working with an AI agent
 

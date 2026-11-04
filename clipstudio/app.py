@@ -1,19 +1,21 @@
 import logging
 import os
 import time
+from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import clip_engine, highlights, hooks, pipelines
 from .library import Library
 from .models import (
-    AIChoice, AIProvider, CaptionSegment, Clip, ClipRequest, PipelineInfo, ProviderSettings, Run, RunStatus, VideoInfo,
+    AIChoice, AIProvider, CaptionSegment, Clip, ClipRequest, MediaMode, PipelineInfo, ProviderSettings, Run, RunStatus,
+    VideoInfo,
 )
 from .settings_store import ProviderSettingsStore
 from .sources import SourceRef, UnsupportedSourceError, parse_source
@@ -34,6 +36,21 @@ library = Library(DB_PATH)
 # One worker, so one ffmpeg runs at a time and later runs wait in its queue.
 runner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pipeline")
 log = logging.getLogger(__name__)
+# Stream mode keeps no video file. A streamed video is its link and the stream URLs found for it, held here in memory.
+# Platforms expire stream URLs after a few hours, so older ones are looked up again before use.
+STREAM_URL_MAX_AGE = 3600
+
+
+@dataclass
+class OpenStream:
+    source: SourceRef
+    media: clip_engine.RemoteMedia
+    resolved_at: float
+    # The platform URIs behind each proxied track's segments, filled in when that track's playlist is first read.
+    segment_urls: dict[str, list[str]] = field(default_factory=dict)
+
+
+streams: dict[str, OpenStream] = {}
 
 
 @asynccontextmanager
@@ -111,6 +128,101 @@ def api_download_video(payload: UrlRequest):
     }
 
 
+def _resolve_stream(source: SourceRef) -> OpenStream:
+    try:
+        media = clip_engine.resolve_stream(source)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not open the stream: {exc}")
+    if media.duration <= 0:
+        raise HTTPException(status_code=400, detail="This video reports no length, so it cannot be streamed. Download it.")
+    stream = streams[source.media_key] = OpenStream(source, media, time.time())
+    return stream
+
+
+def _stream(media_key: str) -> OpenStream:
+    stream = streams.get(media_key)
+    if stream is None:
+        raise HTTPException(status_code=404, detail="This stream is not open on the server. Load the video again.")
+    if time.time() - stream.resolved_at > STREAM_URL_MAX_AGE:
+        stream = _resolve_stream(stream.source)
+    return stream
+
+
+def _playlist(text: str) -> Response:
+    return Response(text, media_type="application/vnd.apple.mpegurl", headers={"Cache-Control": "no-store"})
+
+
+def _proxy_track(stream: OpenStream, track: str) -> clip_engine.RemoteInput:
+    remote = (stream.media.proxy_tracks() or {}).get(track)
+    if remote is None:
+        raise HTTPException(status_code=404, detail="This stream has no such track")
+    return remote
+
+
+def _proxied_playlist(stream: OpenStream, track: str) -> str:
+    remote = _proxy_track(stream, track)
+    try:
+        res = clip_engine.fetch_remote(remote)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"The platform did not send the playlist: {exc}")
+    text, stream.segment_urls[track] = clip_engine.proxy_playlist(res.text, res.url, track)
+    return text
+
+
+@app.post("/api/stream")
+def api_open_stream(payload: UrlRequest):
+    """Open a video for streaming: the preview and every clip read the platform's stream, and nothing is downloaded."""
+    source = _source(payload.url)
+    stream = _resolve_stream(source)
+    return {
+        "video_id": source.media_key,
+        "stream_url": f"/stream/{source.media_key}/index.m3u8",
+        "duration": stream.media.duration,
+        "status": "ready",
+    }
+
+
+@app.get("/stream/{media_key}/index.m3u8")
+def serve_stream_playlist(media_key: str):
+    """The preview: the platform's own HLS passed through this server when the browser can play it, else ffmpeg cuts."""
+    media = _stream(media_key).media
+    tracks = media.proxy_tracks()
+    return _playlist(clip_engine.proxy_master_playlist(tracks) if tracks else clip_engine.preview_playlist(media.duration))
+
+
+@app.get("/stream/{media_key}/{track}.m3u8")
+def serve_proxied_playlist(media_key: str, track: str):
+    return _playlist(_proxied_playlist(_stream(media_key), track))
+
+
+@app.get("/stream/{media_key}/{track}/{index}")
+def serve_proxied_segment(media_key: str, track: str, index: int):
+    stream = _stream(media_key)
+    remote = _proxy_track(stream, track)
+    if track not in stream.segment_urls:
+        _proxied_playlist(stream, track)
+    urls = stream.segment_urls[track]
+    if not 0 <= index < len(urls):
+        raise HTTPException(status_code=404, detail="No such segment")
+    try:
+        res = clip_engine.fetch_remote(remote, urls[index])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"The platform did not send the segment: {exc}")
+    return Response(res.content, media_type=res.headers.get("content-type") or "video/mp2t")
+
+
+@app.get("/stream/{media_key}/{index}.ts")
+def serve_stream_segment(media_key: str, index: int):
+    media = _stream(media_key).media
+    if media.proxy_tracks() or not 0 <= index < clip_engine.preview_segment_count(media.duration):
+        raise HTTPException(status_code=404, detail="No such preview segment")
+    try:
+        segment = clip_engine.preview_segment(media, index)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return Response(segment, media_type="video/mp2t")
+
+
 @app.post("/api/captions")
 def api_get_captions(payload: UrlRequest):
     source = _source(payload.url)
@@ -170,9 +282,14 @@ def api_get_highlights(payload: HighlightsRequest):
 
 @app.post("/api/clip", response_model=Clip)
 def api_create_clip(payload: ClipRequest):
-    source_path = MEDIA_DIR / f"{payload.video_id}.mp4"
-    if not source_path.exists():
-        raise HTTPException(status_code=404, detail="Load the video before exporting a clip.")
+    if payload.mode is MediaMode.STREAM:
+        media = _stream(payload.video_id).media
+        cut = lambda out: clip_engine.cut_remote_clip(media, payload.start_time, payload.end_time, out)
+    else:
+        source_path = MEDIA_DIR / f"{payload.video_id}.mp4"
+        if not source_path.exists():
+            raise HTTPException(status_code=404, detail="Load the video before exporting a clip.")
+        cut = lambda out: clip_engine.cut_clip(str(source_path), payload.start_time, payload.end_time, out)
 
     clip_id = pipelines.new_id()
     safe_name = payload.filename or f"clip_{payload.video_id}_{int(payload.start_time)}_{int(payload.end_time)}.mp4"
@@ -181,7 +298,7 @@ def api_create_clip(payload: ClipRequest):
 
     output_path = CLIPS_DIR / f"{clip_id}_{safe_name}"
     try:
-        clip_engine.cut_clip(str(source_path), payload.start_time, payload.end_time, str(output_path))
+        cut(str(output_path))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Clip cutting failed: {exc}")
 
