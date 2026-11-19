@@ -1,29 +1,32 @@
+import html
 import logging
 import os
+import secrets
 import time
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import clip_engine, highlights, hooks, pipelines
+from . import captions, clip_engine, highlights, hooks, pipelines, uploads
 from .library import Library
 from .models import (
-    AIChoice, AIProvider, CaptionSegment, Clip, ClipRequest, MediaMode, PipelineInfo, ProviderSettings, Run, RunStatus,
-    VideoInfo,
+    AccountInfo, AccountSettings, AIChoice, AIProvider, CaptionSegment, Clip, ClipRequest, EditSpec, MediaMode,
+    PipelineInfo, ProviderSettings, Run, RunStatus, Upload, UploadRequest, UploadStatus, VideoInfo,
 )
-from .settings_store import ProviderSettingsStore
-from .sources import SourceRef, UnsupportedSourceError, parse_source
+from .settings_store import AccountStore, ProviderSettingsStore
+from .sources import SourceRef, UnsupportedSourceError, parse_source, source_from_media_key
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = PACKAGE_DIR.parent
 STATIC_DIR = PACKAGE_DIR / "static"
-STORAGE_DIR = PROJECT_DIR / "storage"
+# The desktop app points this at the user's app-data folder, since its install folder may be read-only.
+STORAGE_DIR = Path(os.environ.get("CLIP_STUDIO_STORAGE") or PROJECT_DIR / "storage")
 MEDIA_DIR = STORAGE_DIR / "media"
 CLIPS_DIR = STORAGE_DIR / "clips"
 
@@ -32,9 +35,14 @@ CLIPS_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = Path(os.environ.get("CLIP_STUDIO_DB", STORAGE_DIR / "clip_studio.db"))
 provider_settings = ProviderSettingsStore(DB_PATH)
+accounts = AccountStore(DB_PATH)
 library = Library(DB_PATH)
 # One worker, so one ffmpeg runs at a time and later runs wait in its queue.
 runner = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pipeline")
+# Uploads wait on the network, not ffmpeg, so they get their own worker and never hold up a run.
+uploader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload")
+# OAuth connections in progress: state -> (platform, redirect URI). Each is used once.
+oauth_states: dict[str, tuple[str, str]] = {}
 log = logging.getLogger(__name__)
 # Stream mode keeps no video file. A streamed video is its link and the stream URLs found for it, held here in memory.
 # Platforms expire stream URLs after a few hours, so older ones are looked up again before use.
@@ -58,6 +66,7 @@ async def lifespan(_: FastAPI):
     yield
     # Without this, stopping the server waits for every queued run. The next start marks them failed.
     runner.shutdown(wait=False, cancel_futures=True)
+    uploader.shutdown(wait=False, cancel_futures=True)
 
 
 app = FastAPI(title="Video Clip Studio", lifespan=lifespan)
@@ -322,8 +331,11 @@ def api_list_clips():
 
 
 def _in_active_run(clip_id: str) -> bool:
+    """True while a run reads the clip or an upload sends it, so its file must stay."""
     return any(
         r.input_clip_id == clip_id and r.status in (RunStatus.QUEUED, RunStatus.RUNNING) for r in library.list_runs()
+    ) or any(
+        u.clip_id == clip_id and u.status in (UploadStatus.QUEUED, UploadStatus.UPLOADING) for u in library.list_uploads()
     )
 
 
@@ -352,7 +364,7 @@ def api_delete_clip(clip_id: str):
     if clip is None:
         raise HTTPException(status_code=404, detail="Clip not found")
     if _in_active_run(clip_id):
-        raise HTTPException(status_code=400, detail="Cannot delete a clip that is currently in an active pipeline run.")
+        raise HTTPException(status_code=400, detail="Cannot delete a clip that an active run or upload is still using.")
     _remove_clip(clip)
     return {"status": "deleted", "clip_id": clip_id}
 
@@ -365,7 +377,8 @@ def api_list_pipelines():
 def _execute(run_id: str, ai: AIChoice) -> None:
     try:
         pipelines.execute(
-            library.get_run(run_id), ai, library=library, clips_dir=CLIPS_DIR, saved=provider_settings.all()
+            library.get_run(run_id), ai, library=library, clips_dir=CLIPS_DIR, saved=provider_settings.all(),
+            on_clip=_queue_auto_uploads,
         )
     except Exception:
         log.exception("Run %s stopped outside its steps", run_id)
@@ -440,6 +453,256 @@ def api_delete_run(run_id: str):
         raise HTTPException(status_code=400, detail="Cannot delete an active run.")
     library.delete_run(run_id)
     return {"status": "deleted", "run_id": run_id}
+
+
+def _library_clip(clip_id: str) -> Clip:
+    clip = library.get_clip(clip_id)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="That clip is not in the library.")
+    return clip
+
+
+@app.get("/api/clips/{clip_id}", response_model=Clip)
+def api_get_clip(clip_id: str):
+    return _library_clip(clip_id)
+
+
+@app.get("/api/studio")
+def api_studio_options():
+    """What the Studio page offers: the caption fonts, and a fresh edit with every setting at its default."""
+    return {"fonts": list(captions.FONTS), "defaults": EditSpec().model_dump(mode="json")}
+
+
+@app.post("/api/clips/{clip_id}/auto-captions")
+def api_auto_captions(clip_id: str):
+    """The clip's subtitles on its own clock. A clip saved without them fetches them from its video first."""
+    clip = _library_clip(clip_id)
+    lines = captions.clip_captions(clip.captions, clip.start_time, clip.end_time)
+    if lines:
+        return {"captions": lines, "fetched": False}
+    source = source_from_media_key(clip.video_id)
+    if source is None:
+        raise HTTPException(
+            status_code=400,
+            detail="This platform publishes no subtitles. Add captions by hand with Add caption.",
+        )
+    try:
+        segments = clip_engine.fetch_captions(source)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not fetch subtitles: {exc}")
+    before, inside = hooks.hook_window(segments, clip.start_time, clip.end_time)
+    library.set_captions(clip.clip_id, [*before, *inside])
+    return {"captions": captions.clip_captions(inside, clip.start_time, clip.end_time), "fetched": True}
+
+
+@app.post("/api/clips/{clip_id}/render", response_model=Clip)
+def api_render_clip(clip_id: str, spec: EditSpec):
+    """Export the Studio's edit of a clip as a new clip in the library."""
+    clip = _library_clip(clip_id)
+    source = CLIPS_DIR / clip.file_name
+    if not source.is_file():
+        raise HTTPException(status_code=404, detail="This clip's file is missing from storage.")
+    new_id = pipelines.new_id()
+    stem = Path(clip.file_name).stem.removeprefix(f"{clip.clip_id}_").removesuffix("_studio")
+    final = CLIPS_DIR / f"{new_id}_{stem}_studio.mp4"
+    part = CLIPS_DIR / f".{new_id}.part.mp4"
+    try:
+        offset, length = clip_engine.render_edit(source, spec, part)
+    except ValueError as exc:
+        part.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        part.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"The export failed: {exc}")
+    part.replace(final)
+    start = clip.start_time + offset
+    made = clip.model_copy(update={
+        "clip_id": new_id,
+        "file_name": final.name,
+        "start_time": round(start, 3),
+        "end_time": round(start + length, 3),
+        "made_by_run": None,
+        "created_at": time.time(),
+    })
+    library.add_clip(made)
+    _queue_auto_uploads(made)
+    return made
+
+
+def _destination(platform: str) -> uploads.Destination:
+    destination = uploads.DESTINATIONS.get(platform)
+    if destination is None:
+        raise HTTPException(status_code=404, detail=f"There is no upload platform called {platform}.")
+    return destination
+
+
+def _account_list() -> list[AccountInfo]:
+    return [d.info(accounts.get(d.id)) for d in uploads.DESTINATIONS.values()]
+
+
+@app.get("/api/accounts", response_model=list[AccountInfo])
+def api_list_accounts():
+    return _account_list()
+
+
+@app.put("/api/accounts/{platform}", response_model=list[AccountInfo])
+def api_save_account(platform: str, payload: AccountSettings):
+    destination = _destination(platform)
+    unknown = set(payload.credentials) - {f.name for f in destination.fields}
+    if unknown:
+        raise HTTPException(
+            status_code=400, detail=f"{destination.label} has no field called {', '.join(sorted(unknown))}."
+        )
+    account = accounts.get(platform)
+    # A blank field keeps what is saved, so the page never needs to know a secret to change the others.
+    account.credentials.update({k: v.strip() for k, v in payload.credentials.items() if v.strip()})
+    if payload.auto_upload is not None:
+        account.auto_upload = payload.auto_upload
+    if payload.default_privacy is not None:
+        account.default_privacy = payload.default_privacy
+    if payload.default_description is not None:
+        account.default_description = payload.default_description
+    accounts.save(platform, account)
+    return _account_list()
+
+
+@app.delete("/api/accounts/{platform}", response_model=list[AccountInfo])
+def api_forget_account(platform: str):
+    _destination(platform)
+    accounts.forget(platform)
+    return _account_list()
+
+
+@app.get("/api/accounts/{platform}/connect")
+def api_connect_account(platform: str, request: Request):
+    """Send the browser to the platform's sign-in page. It comes back to the callback below."""
+    destination = _destination(platform)
+    account = accounts.get(platform)
+    if destination.oauth is None:
+        raise HTTPException(status_code=400, detail=f"{destination.label} connects with a pasted token, not a sign-in.")
+    if not all(account.credentials.get(n) for n in destination.oauth.needs):
+        raise HTTPException(status_code=400, detail=f"Save the {destination.label} app details before connecting.")
+    state = secrets.token_urlsafe(24)
+    redirect_uri = str(request.url_for("api_account_callback", platform=platform))
+    oauth_states[state] = (platform, redirect_uri)
+    return RedirectResponse(destination.oauth.authorize_url(account.credentials, redirect_uri, state))
+
+
+def _callback_page(title: str, message: str) -> HTMLResponse:
+    return HTMLResponse(
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Clip Studio</title>'
+        '<link rel="stylesheet" href="/css/app.css"><link rel="stylesheet" href="/css/publish.css"></head>'
+        f'<body><main class="callback"><h1 class="pane-title">{html.escape(title)}</h1>'
+        f'<p>{html.escape(message)}</p><p><a class="btn" href="/publish.html">Back to Publish</a></p></main></body></html>'
+    )
+
+
+@app.get("/api/accounts/{platform}/callback", name="api_account_callback")
+def api_account_callback(platform: str, state: str = "", code: str = "", error: str = "", error_description: str = ""):
+    destination = _destination(platform)
+    expected = oauth_states.pop(state, None)
+    if expected is None or expected[0] != platform or destination.oauth is None:
+        return _callback_page("Not connected", "This sign-in link expired or was already used. Choose Connect again.")
+    if error or not code:
+        return _callback_page("Not connected", f"{destination.label} said: {error_description or error or 'no code'}")
+    try:
+        tokens = destination.oauth.exchange(accounts.get(platform).credentials, code, expected[1])
+    except Exception as exc:
+        return _callback_page("Not connected", str(exc))
+    accounts.update_credentials(platform, tokens)
+    return _callback_page(f"{destination.label} connected", "Clips can upload to this account now. You can close this tab.")
+
+
+def _queue_upload(upload: Upload) -> Upload:
+    library.add_upload(upload)
+    uploader.submit(_send_upload, upload.upload_id)
+    return upload
+
+
+def _send_upload(upload_id: str) -> None:
+    try:
+        uploads.execute(library.get_upload(upload_id), library=library, accounts=accounts, clips_dir=CLIPS_DIR)
+    except Exception:
+        log.exception("Upload %s stopped outside its platform call", upload_id)
+
+
+def _default_title(clip: Clip) -> str:
+    return (clip.hook or Path(clip.file_name).stem.removeprefix(f"{clip.clip_id}_").replace("_", " "))[:100]
+
+
+def _queue_auto_uploads(clip: Clip | None) -> None:
+    """Upload a finished clip to every connected account that has automatic upload turned on."""
+    if clip is None:
+        return
+    for destination in uploads.DESTINATIONS.values():
+        account = accounts.get(destination.id)
+        if not (account.auto_upload and destination.connected(account)):
+            continue
+        _queue_upload(Upload(
+            upload_id=pipelines.new_id(),
+            clip_id=clip.clip_id,
+            platform=destination.id,
+            title=_default_title(clip),
+            description=account.default_description,
+            privacy=account.default_privacy,
+            automatic=True,
+            created_at=time.time(),
+        ))
+
+
+@app.post("/api/uploads", response_model=Upload, status_code=202)
+def api_start_upload(payload: UploadRequest):
+    clip = _library_clip(payload.clip_id)
+    destination = _destination(payload.platform)
+    if not destination.connected(accounts.get(destination.id)):
+        raise HTTPException(status_code=400, detail=f"Connect {destination.label} on the Publish page first.")
+    return _queue_upload(Upload(
+        upload_id=pipelines.new_id(),
+        clip_id=clip.clip_id,
+        platform=destination.id,
+        title=payload.title.strip() or _default_title(clip),
+        description=payload.description,
+        tags=[t.strip() for t in payload.tags if t.strip()],
+        privacy=payload.privacy,
+        created_at=time.time(),
+    ))
+
+
+@app.get("/api/uploads", response_model=list[Upload])
+def api_list_uploads():
+    return library.list_uploads()
+
+
+def _finished_upload(upload_id: str) -> Upload:
+    upload = library.get_upload(upload_id)
+    if upload is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    if upload.status in (UploadStatus.QUEUED, UploadStatus.UPLOADING):
+        raise HTTPException(status_code=400, detail="This upload is still in progress.")
+    return upload
+
+
+@app.post("/api/uploads/{upload_id}/retry", response_model=Upload, status_code=202)
+def api_retry_upload(upload_id: str):
+    upload = _finished_upload(upload_id)
+    _library_clip(upload.clip_id)
+    _destination(upload.platform)
+    return _queue_upload(upload.model_copy(update={
+        "upload_id": pipelines.new_id(), "status": UploadStatus.QUEUED, "detail": None, "remote_url": None,
+        "automatic": False, "created_at": time.time(), "finished_at": None,
+    }))
+
+
+@app.delete("/api/uploads/{upload_id}")
+def api_delete_upload(upload_id: str):
+    _finished_upload(upload_id)
+    library.delete_upload(upload_id)
+    return {"status": "deleted", "upload_id": upload_id}
+
+
+@app.delete("/api/uploads")
+def api_clear_uploads():
+    return {"status": "cleared", "count": library.clear_finished_uploads()}
 
 
 @app.get("/media/{filename}")

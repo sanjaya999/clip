@@ -118,3 +118,77 @@ export const deleteRun = (runId) =>
 /** @returns {Promise<{status: string, count: number}>} */
 export const clearRuns = () =>
   sendJson('DELETE', '/api/runs', null, 'Could not clear runs');
+
+/** @param {string} clipId @returns {Promise<Clip>} */
+export const getClip = (clipId) => getJson(`/api/clips/${encodeURIComponent(clipId)}`, 'Could not load this clip');
+
+/**
+ * @typedef {{font: string, size: number, color: string, outline_color: string, outline: number, box: boolean,
+ *   box_color: string, box_opacity: number, position: 'bottom'|'middle'|'top', margin: number, bold: boolean,
+ *   italic: boolean, uppercase: boolean}} CaptionStyle
+ * @typedef {{trim_start: number, trim_end: number|null, aspect: string, fit: 'crop'|'fit', focus_x: number,
+ *   focus_y: number, background: string, border: number, border_color: string, brightness: number, contrast: number,
+ *   saturation: number, volume: number, fade: boolean, title: string, title_style: CaptionStyle,
+ *   captions: CaptionSegment[], caption_style: CaptionStyle}} EditSpec
+ */
+
+/** @returns {Promise<{fonts: string[], defaults: EditSpec}>} */
+export const getStudioOptions = () => getJson('/api/studio', 'Could not load the Studio settings');
+
+/**
+ * The clip's subtitles on its own clock, fetched from its video first if the clip was saved without them.
+ * @returns {Promise<{captions: CaptionSegment[], fetched: boolean}>}
+ */
+export const autoCaptions = (clipId) =>
+  sendJson('POST', `/api/clips/${encodeURIComponent(clipId)}/auto-captions`, null, 'Could not get captions');
+
+/** Export the Studio's edit as a new clip. @returns {Promise<Clip>} */
+export const renderClip = (clipId, spec) =>
+  sendJson('POST', `/api/clips/${encodeURIComponent(clipId)}/render`, spec, 'The export failed');
+
+/**
+ * @typedef {{name: string, label: string, secret: boolean, help: string}} AccountField
+ * @typedef {{id: string, label: string, help: string, fields: AccountField[], values: Record<string, string|null>,
+ *   connected: boolean, uses_oauth: boolean, can_connect: boolean, auto_upload: boolean, default_privacy: string,
+ *   default_description: string, privacy_note: string}} Account
+ * @typedef {{upload_id: string, clip_id: string, platform: string, title: string, description: string,
+ *   tags: string[], privacy: string, status: 'queued'|'uploading'|'done'|'failed', detail: string|null,
+ *   remote_url: string|null, automatic: boolean, created_at: number, finished_at: number|null}} Upload
+ */
+
+/** @returns {Promise<Account[]>} */
+export const listAccounts = () => getJson('/api/accounts', 'Could not load the accounts');
+
+/** Blank credential fields keep their saved values. @returns {Promise<Account[]>} */
+export const saveAccount = (platform, settings) =>
+  sendJson('PUT', `/api/accounts/${encodeURIComponent(platform)}`, settings, 'Could not save this account');
+
+/** @returns {Promise<Account[]>} */
+export const forgetAccount = (platform) =>
+  sendJson('DELETE', `/api/accounts/${encodeURIComponent(platform)}`, null, 'Could not forget this account');
+
+/** The page that starts a platform sign-in. Open it in a new tab: it ends on a page of its own. */
+export const connectAccountUrl = (platform) => `/api/accounts/${encodeURIComponent(platform)}/connect`;
+
+/** The address a platform sends the user back to after sign-in. Register it in the platform's developer console. */
+export const accountCallbackUrl = (platform) =>
+  `${location.origin}/api/accounts/${encodeURIComponent(platform)}/callback`;
+
+/**
+ * @param {{clip_id: string, platform: string, title: string, description: string, tags: string[], privacy: string}} body
+ * @returns {Promise<Upload>}
+ */
+export const startUpload = (body) => sendJson('POST', '/api/uploads', body, 'Could not start the upload');
+
+/** @returns {Promise<Upload[]>} newest first */
+export const listUploads = () => getJson('/api/uploads', 'Could not load the uploads');
+
+/** @returns {Promise<Upload>} */
+export const retryUpload = (uploadId) =>
+  sendJson('POST', `/api/uploads/${encodeURIComponent(uploadId)}/retry`, null, 'Could not retry the upload');
+
+export const deleteUpload = (uploadId) =>
+  sendJson('DELETE', `/api/uploads/${encodeURIComponent(uploadId)}`, null, 'Could not delete this upload');
+
+/** @returns {Promise<{status: string, count: number}>} */
+export const clearUploads = () => sendJson('DELETE', '/api/uploads', null, 'Could not clear the uploads');

@@ -13,6 +13,8 @@ const PIPELINE_PAGE = '/pipeline.html';
 export const isActive = (run) => run.status === 'queued' || run.status === 'running';
 
 export const trackRunUrl = (runId) => `${PIPELINE_PAGE}?run=${encodeURIComponent(runId)}`;
+export const studioUrl = (clipId) => `/studio.html?clip=${encodeURIComponent(clipId)}`;
+export const publishUrl = (clipId) => `/publish.html?clip=${encodeURIComponent(clipId)}`;
 
 /** @param {Run[]} runs */
 export function showActiveRunCount(runs) {
@@ -90,6 +92,8 @@ export function clipCard(clip, pipelines) {
         ${clip.hook ? `<p class="clip-hook">Hook: ${escapeHtml(clip.hook)}</p>` : ''}
         <div class="clip-actions">
           <a class="btn btn-sm" href="${escapeHtml(clip.download_url)}" download="${escapeHtml(clip.file_name)}">Download</a>
+          <a class="btn btn-sm" href="${escapeHtml(studioUrl(clip.clip_id))}">Edit in Studio</a>
+          <a class="btn btn-sm" href="${escapeHtml(publishUrl(clip.clip_id))}">Upload</a>
           <button type="button" class="btn btn-sm btn-danger" data-action="delete-clip" data-clip-id="${escapeHtml(clip.clip_id)}">Delete</button>
           ${sendControl(clip, pipelines)}
         </div>

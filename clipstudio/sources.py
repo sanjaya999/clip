@@ -49,6 +49,29 @@ _UNSUPPORTED_MESSAGE = (
 )
 
 
+# The link to read a video again from its media key alone. Only platforms with subtitles need a row:
+# a clip keeps only its media key, and subtitles are the one thing a clip fetches from its video later.
+_VIDEO_URLS: dict[Platform, str] = {
+    Platform.YOUTUBE: "https://www.youtube.com/watch?v={id}",
+}
+
+
+def source_from_media_key(media_key: str) -> SourceRef | None:
+    """The source a media key came from, or None when the platform has no row in _VIDEO_URLS."""
+    platform_name, _, media_id = media_key.partition("_")
+    try:
+        platform = Platform(platform_name)
+    except ValueError:
+        return None
+    template = _VIDEO_URLS.get(platform)
+    if template is None or not media_id:
+        return None
+    try:
+        return parse_source(template.format(id=media_id))
+    except UnsupportedSourceError:
+        return None
+
+
 def parse_source(url: str) -> SourceRef:
     text = url.strip()
     if "://" not in text:

@@ -2,6 +2,8 @@
 export const PAGES = [
   { label: 'Editor', href: '/' },
   { label: 'Pipeline', href: '/pipeline.html' },
+  { label: 'Studio', href: '/studio.html' },
+  { label: 'Publish', href: '/publish.html' },
 ];
 
 export function renderNav() {

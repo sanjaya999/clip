@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Studio · Clip Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="/css/studio.css">
+  <script type="module" src="/js/studio.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <span class="wordmark">Clip Studio</span>
+    <nav class="pages" data-nav aria-label="Pages"></nav>
+    <div class="studio-bar">
+      <select id="clipSelect" class="field" aria-label="Clip to edit">
+        <option value="">Loading clips…</option>
+      </select>
+      <button type="button" id="resetEditBtn" class="btn" title="Start this clip's edit over">Start over</button>
+      <button type="button" id="exportBtn" class="btn btn-primary" disabled>Export</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <section class="studio">
+      <div class="clip-meta">
+        <span id="frameInfo" class="frame-info"></span>
+        <div id="studioStatus" class="status-msg" role="status">Pick a clip to edit</div>
+      </div>
+      <p id="studioError" class="load-error" role="alert" hidden></p>
+
+      <div class="stage-wrap" id="stageWrap">
+        <p class="placeholder-view" id="stagePlaceholder">Pick a clip above, or export one in the Editor first.</p>
+        <div class="stage" id="stage" hidden>
+          <video id="studioVideo" playsinline preload="auto"></video>
+          <div class="stage-border" id="stageBorder"></div>
+          <div class="stage-text stage-title" id="stageTitle"><span></span></div>
+          <div class="stage-text stage-caption" id="stageCaption"><span></span></div>
+        </div>
+      </div>
+
+      <div class="transport">
+        <div class="button-group">
+          <button type="button" id="playBtn" class="btn btn-primary" disabled>Play</button>
+          <button type="button" id="backBtn" class="btn" aria-label="Back 1 second">−1s</button>
+          <button type="button" id="forwardBtn" class="btn" aria-label="Forward 1 second">+1s</button>
+          <button type="button" id="setTrimInBtn" class="btn" title="Start the clip at the playhead">Trim in</button>
+          <button type="button" id="setTrimOutBtn" class="btn" title="End the clip at the playhead">Trim out</button>
+        </div>
+        <span class="studio-clock"><span id="clockNow" class="timecode-sm">00:00.0</span> / <span id="clockLength">00:00.0</span></span>
+      </div>
+
+      <div class="studio-tracks">
+        <span class="track-label">Trim</span>
+        <div class="timeline" id="trimTimeline">
+          <div class="timeline-lane">
+            <div class="timeline-range-fill" id="trimFill"></div>
+            <div class="playhead-marker" id="trimPlayhead"></div>
+          </div>
+          <input type="range" id="trimStart" class="range-input range-in" min="0" max="1" step="0.01" value="0" aria-label="Trim start">
+          <input type="range" id="trimEnd" class="range-input range-out" min="0" max="1" step="0.01" value="1" aria-label="Trim end">
+        </div>
+        <span class="track-label">Captions</span>
+        <div class="caption-track" id="captionTrack" aria-label="Caption timeline"></div>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="tabs-nav">
+        <button type="button" class="tab-btn active" data-tab="captions">Captions</button>
+        <button type="button" class="tab-btn" data-tab="style">Style</button>
+        <button type="button" class="tab-btn" data-tab="video">Video</button>
+      </div>
+
+      <div class="tab-content" data-tab-panel="captions">
+        <div class="cue-tools">
+          <button type="button" id="autoCaptionsBtn" class="btn btn-primary btn-sm" disabled>Add captions automatically</button>
+          <button type="button" id="addCueBtn" class="btn btn-sm" disabled>Add caption</button>
+        </div>
+        <div class="cue-tools">
+          <label class="inline-field">
+            <span class="field-label">Short lines</span>
+            <select id="chunkWords" class="field field-sm">
+              <option value="2">2 words</option>
+              <option value="3" selected>3 words</option>
+              <option value="4">4 words</option>
+              <option value="6">6 words</option>
+            </select>
+          </label>
+          <button type="button" id="chunkBtn" class="btn btn-sm" disabled>Split</button>
+          <span class="tool-gap"></span>
+          <span class="field-label">Shift all</span>
+          <button type="button" class="btn btn-sm" data-shift="-0.1" disabled>−0.1s</button>
+          <button type="button" class="btn btn-sm" data-shift="0.1" disabled>+0.1s</button>
+          <button type="button" id="clearCuesBtn" class="btn btn-sm btn-danger" disabled>Remove all</button>
+        </div>
+        <p id="cueHint" class="hint">Captions show here once you add them.</p>
+        <div id="cueList" class="cue-list"></div>
+      </div>
+
+      <div class="tab-content" data-tab-panel="style" hidden>
+        <section class="control-group" aria-labelledby="presetHeading">
+          <h2 id="presetHeading" class="group-title">Looks</h2>
+          <div class="preset-row" id="presetRow"></div>
+        </section>
+        <section class="control-group" aria-labelledby="captionStyleHeading">
+          <h2 id="captionStyleHeading" class="group-title">Caption text</h2>
+          <label class="control"><span class="field-label">Font</span>
+            <select class="field field-sm" data-bind="caption_style.font" data-fonts></select></label>
+          <label class="control"><span class="field-label">Size <output data-show="caption_style.size"></output></span>
+            <input type="range" min="2" max="15" step="0.5" data-bind="caption_style.size"></label>
+          <div class="control-pair">
+            <label class="control"><span class="field-label">Colour</span>
+              <input type="color" class="swatch" data-bind="caption_style.color"></label>
+            <label class="control"><span class="field-label">Outline colour</span>
+              <input type="color" class="swatch" data-bind="caption_style.outline_color"></label>
+          </div>
+          <label class="control"><span class="field-label">Outline <output data-show="caption_style.outline"></output></span>
+            <input type="range" min="0" max="30" step="1" data-bind="caption_style.outline"></label>
+          <div class="check-row">
+            <label class="check"><input type="checkbox" data-bind="caption_style.bold"> Bold</label>
+            <label class="check"><input type="checkbox" data-bind="caption_style.italic"> Italic</label>
+            <label class="check"><input type="checkbox" data-bind="caption_style.uppercase"> Capitals</label>
+          </div>
+          <label class="check"><input type="checkbox" data-bind="caption_style.box"> Background box</label>
+          <div class="control-pair">
+            <label class="control"><span class="field-label">Box colour</span>
+              <input type="color" class="swatch" data-bind="caption_style.box_color"></label>
+            <label class="control"><span class="field-label">Box opacity <output data-show="caption_style.box_opacity"></output></span>
+              <input type="range" min="0" max="1" step="0.05" data-bind="caption_style.box_opacity"></label>
+          </div>
+          <div class="control-pair">
+            <label class="control"><span class="field-label">Position</span>
+              <select class="field field-sm" data-bind="caption_style.position">
+                <option value="bottom">Bottom</option>
+                <option value="middle">Middle</option>
+                <option value="top">Top</option>
+              </select></label>
+            <label class="control"><span class="field-label">From the edge <output data-show="caption_style.margin"></output></span>
+              <input type="range" min="0" max="45" step="1" data-bind="caption_style.margin"></label>
+          </div>
+        </section>
+        <section class="control-group" aria-labelledby="titleHeading">
+          <h2 id="titleHeading" class="group-title">Title</h2>
+          <label class="control"><span class="field-label">Shown for the whole clip</span>
+            <input type="text" class="field field-sm" maxlength="120" placeholder="No title" data-bind="title"></label>
+          <div class="control-pair">
+            <label class="control"><span class="field-label">Font</span>
+              <select class="field field-sm" data-bind="title_style.font" data-fonts></select></label>
+            <label class="control"><span class="field-label">Size <output data-show="title_style.size"></output></span>
+              <input type="range" min="2" max="15" step="0.5" data-bind="title_style.size"></label>
+          </div>
+          <div class="control-pair">
+            <label class="control"><span class="field-label">Colour</span>
+              <input type="color" class="swatch" data-bind="title_style.color"></label>
+            <label class="control"><span class="field-label">Box colour</span>
+              <input type="color" class="swatch" data-bind="title_style.box_color"></label>
+          </div>
+          <div class="check-row">
+            <label class="check"><input type="checkbox" data-bind="title_style.box"> Box</label>
+            <label class="check"><input type="checkbox" data-bind="title_style.uppercase"> Capitals</label>
+            <label class="check"><input type="checkbox" data-bind="title_style.bold"> Bold</label>
+          </div>
+        </section>
+      </div>
+
+      <div class="tab-content" data-tab-panel="video" hidden>
+        <section class="control-group" aria-labelledby="frameHeading">
+          <h2 id="frameHeading" class="group-title">Frame</h2>
+          <div class="control-pair">
+            <label class="control"><span class="field-label">Shape</span>
+              <select class="field field-sm" data-bind="aspect">
+                <option value="source">As recorded</option>
+                <option value="9:16">9:16 Shorts, Reels, TikTok</option>
+                <option value="1:1">1:1 Square</option>
+                <option value="4:5">4:5 Feed</option>
+                <option value="16:9">16:9 Wide</option>
+              </select></label>
+            <label class="control"><span class="field-label">Fill</span>
+              <select class="field field-sm" data-bind="fit">
+                <option value="crop">Crop to fill</option>
+                <option value="fit">Fit inside</option>
+              </select></label>
+          </div>
+          <label class="control" data-when="crop"><span class="field-label">Crop across <output data-show="focus_x"></output></span>
+            <input type="range" min="0" max="100" step="1" data-bind="focus_x"></label>
+          <label class="control" data-when="crop"><span class="field-label">Crop up and down <output data-show="focus_y"></output></span>
+            <input type="range" min="0" max="100" step="1" data-bind="focus_y"></label>
+          <label class="control" data-when="fit"><span class="field-label">Space around</span>
+            <input type="color" class="swatch" data-bind="background"></label>
+        </section>
+        <section class="control-group" aria-labelledby="borderHeading">
+          <h2 id="borderHeading" class="group-title">Border</h2>
+          <div class="control-pair">
+            <label class="control"><span class="field-label">Width <output data-show="border"></output></span>
+              <input type="range" min="0" max="10" step="0.25" data-bind="border"></label>
+            <label class="control"><span class="field-label">Colour</span>
+              <input type="color" class="swatch" data-bind="border_color"></label>
+          </div>
+        </section>
+        <section class="control-group" aria-labelledby="lookHeading">
+          <h2 id="lookHeading" class="group-title">Look</h2>
+          <label class="control"><span class="field-label">Brightness <output data-show="brightness"></output></span>
+            <input type="range" min="-0.5" max="0.5" step="0.01" data-bind="brightness"></label>
+          <label class="control"><span class="field-label">Contrast <output data-show="contrast"></output></span>
+            <input type="range" min="0.5" max="2" step="0.01" data-bind="contrast"></label>
+          <label class="control"><span class="field-label">Saturation <output data-show="saturation"></output></span>
+            <input type="range" min="0" max="3" step="0.01" data-bind="saturation"></label>
+        </section>
+        <section class="control-group" aria-labelledby="soundHeading">
+          <h2 id="soundHeading" class="group-title">Sound and motion</h2>
+          <label class="control"><span class="field-label">Volume <output data-show="volume"></output></span>
+            <input type="range" min="0" max="3" step="0.05" data-bind="volume"></label>
+          <label class="check"><input type="checkbox" data-bind="fade"> Fade in and out</label>
+        </section>
+      </div>
+    </aside>
+  </main>
+</body>
+</html>
