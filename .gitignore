@@ -8,3 +8,7 @@ storage/clips/*
 .DS_Store
 storage/*.db
 storage/*.db-journal
+desktop/node_modules/
+desktop/dist/
+desktop/backend-dist/
+build/

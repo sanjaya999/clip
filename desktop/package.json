@@ -1,0 +1,78 @@
+{
+  "name": "clip-studio",
+  "productName": "Clip Studio",
+  "version": "0.1.0",
+  "description": "Cut short clips from YouTube, Twitch and Kick videos, caption them, and upload them.",
+  "main": "main.js",
+  "private": true,
+  "license": "UNLICENSED",
+  "author": "Clip Studio",
+  "homepage": "https://github.com/sanjaya999/clip",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sanjaya999/clip.git"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --publish never",
+    "release": "electron-builder --publish always"
+  },
+  "devDependencies": {
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0"
+  },
+  "build": {
+    "appId": "io.github.sanjaya999.clipstudio",
+    "productName": "Clip Studio",
+    "artifactName": "Clip-Studio-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "loading.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend-dist/clipstudio-server",
+        "to": "backend"
+      },
+      {
+        "from": "node_modules/ffmpeg-static",
+        "to": "ffmpeg",
+        "filter": ["ffmpeg", "ffmpeg.exe", "*LICENSE*"]
+      },
+      {
+        "from": "node_modules/ffprobe-static/bin/${platform}/${arch}",
+        "to": "ffmpeg",
+        "filter": ["ffprobe", "ffprobe.exe"]
+      }
+    ],
+    "win": {
+      "target": ["nsis"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.video"
+    },
+    "linux": {
+      "target": ["AppImage", "tar.gz"],
+      "category": "AudioVideo"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "sanjaya999",
+        "repo": "clip",
+        "releaseType": "draft"
+      }
+    ]
+  }
+}

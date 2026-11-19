@@ -1,0 +1,87 @@
+# Builds the desktop app on every OS. A pushed tag like v0.2.0 also uploads the installers to a draft GitHub
+# release for that tag; running it by hand (Actions > Desktop app > Run workflow) only keeps them as artifacts.
+# See desktop/README.md for the release steps.
+name: Desktop app
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+          - name: macOS Apple silicon
+            os: macos-latest
+          - name: macOS Intel
+            os: macos-15-intel
+          - name: Linux x64
+            os: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version="v$(node -p "require('./desktop/package.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match desktop/package.json version $version"
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Freeze the Python server
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install . pyinstaller
+          pyinstaller desktop/clipstudio-server.spec --noconfirm --distpath desktop/backend-dist --workpath build/pyinstaller
+
+      - name: Check the frozen server loads
+        shell: bash
+        run: |
+          server=desktop/backend-dist/clipstudio-server/clipstudio-server
+          if [ "$RUNNER_OS" = "Windows" ]; then server="$server.exe"; fi
+          CLIP_STUDIO_STORAGE="$RUNNER_TEMP/clip-storage" "$server" --check
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Electron, electron-builder and ffmpeg
+        working-directory: desktop
+        run: npm install
+
+      - name: Package
+        working-directory: desktop
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Unsigned unless signing secrets are set up. See desktop/README.md.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --publish ${{ startsWith(github.ref, 'refs/tags/v') && 'always' || 'never' }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: clip-studio-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.dmg
+            desktop/dist/*.zip
+            desktop/dist/*.AppImage
+            desktop/dist/*.tar.gz
