@@ -227,6 +227,146 @@ class Run(BaseModel):
         self.output_clip_id = None
 
 
+HEX_COLOR = r"^#[0-9a-fA-F]{6}$"
+
+
+class CaptionPosition(StrEnum):
+    BOTTOM = "bottom"
+    MIDDLE = "middle"
+    TOP = "top"
+
+
+class Aspect(StrEnum):
+    SOURCE = "source"
+    LANDSCAPE = "16:9"
+    PORTRAIT = "9:16"
+    SQUARE = "1:1"
+    FEED = "4:5"
+
+
+class Fit(StrEnum):
+    """How the clip fills a frame of another shape: cropped to fill it, or shrunk to fit with a colour around it."""
+    CROP = "crop"
+    FIT = "fit"
+
+
+class CaptionStyle(BaseModel):
+    """How burned-in captions look. Sizes are relative to the output frame, so the preview and the export agree."""
+    font: str = "Arial"
+    size: float = Field(default=6.5, ge=2.0, le=15.0, description="Font size as a percent of the frame height")
+    color: str = Field(default="#ffffff", pattern=HEX_COLOR)
+    outline_color: str = Field(default="#000000", pattern=HEX_COLOR)
+    outline: float = Field(default=12.0, ge=0.0, le=30.0, description="Outline width as a percent of the font size")
+    box: bool = False
+    box_color: str = Field(default="#000000", pattern=HEX_COLOR)
+    box_opacity: float = Field(default=0.6, ge=0.0, le=1.0)
+    position: CaptionPosition = CaptionPosition.BOTTOM
+    margin: float = Field(default=10.0, ge=0.0, le=45.0, description="Distance from the edge as a percent of the height")
+    bold: bool = True
+    italic: bool = False
+    uppercase: bool = False
+
+
+class EditSpec(BaseModel):
+    """Everything the Studio page changes about a clip. Caption times are clip seconds, before the trim."""
+    trim_start: float = Field(default=0.0, ge=0.0)
+    trim_end: float | None = Field(default=None, gt=0.0)
+    aspect: Aspect = Aspect.SOURCE
+    fit: Fit = Fit.CROP
+    focus_x: float = Field(default=50.0, ge=0.0, le=100.0)
+    focus_y: float = Field(default=50.0, ge=0.0, le=100.0)
+    background: str = Field(default="#000000", pattern=HEX_COLOR)
+    border: float = Field(default=0.0, ge=0.0, le=10.0, description="Frame width as a percent of the shorter side")
+    border_color: str = Field(default="#f2c32b", pattern=HEX_COLOR)
+    brightness: float = Field(default=0.0, ge=-0.5, le=0.5)
+    contrast: float = Field(default=1.0, ge=0.5, le=2.0)
+    saturation: float = Field(default=1.0, ge=0.0, le=3.0)
+    volume: float = Field(default=1.0, ge=0.0, le=3.0)
+    fade: bool = False
+    title: str = Field(default="", max_length=120)
+    title_style: CaptionStyle = CaptionStyle(position=CaptionPosition.TOP, margin=8.0, size=5.5, box=True)
+    captions: list[CaptionSegment] = []
+    caption_style: CaptionStyle = CaptionStyle()
+
+    @model_validator(mode="after")
+    def validate_trim(self) -> "EditSpec":
+        if self.trim_end is not None and self.trim_end <= self.trim_start:
+            raise ValueError("trim_end must be later than trim_start")
+        return self
+
+
+class UploadPrivacy(StrEnum):
+    PRIVATE = "private"
+    UNLISTED = "unlisted"
+    PUBLIC = "public"
+
+
+class UploadStatus(StrEnum):
+    QUEUED = "queued"
+    UPLOADING = "uploading"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class UploadRequest(BaseModel):
+    clip_id: str
+    platform: str
+    title: str = Field(default="", max_length=100)
+    description: str = Field(default="", max_length=4000)
+    tags: list[str] = []
+    privacy: UploadPrivacy = UploadPrivacy.PRIVATE
+
+
+class Upload(BaseModel):
+    """One clip sent to one platform. Credentials never appear here."""
+    upload_id: str
+    clip_id: str
+    platform: str
+    title: str
+    description: str = ""
+    tags: list[str] = []
+    privacy: UploadPrivacy = UploadPrivacy.PRIVATE
+    status: UploadStatus = UploadStatus.QUEUED
+    detail: str | None = None
+    remote_url: str | None = None
+    automatic: bool = False
+    created_at: float
+    finished_at: float | None = None
+
+
+class AccountField(BaseModel):
+    name: str
+    label: str
+    secret: bool
+    help: str = ""
+
+
+class AccountInfo(BaseModel):
+    """A platform as the Publish page sees it. Secret fields are reported only as hints."""
+    id: str
+    label: str
+    help: str
+    fields: list[AccountField]
+    # Non-secret fields as saved, and secret fields as a hint like "…a1b2", or None when unset.
+    values: dict[str, str | None]
+    connected: bool
+    # Whether the platform signs in through OAuth, and whether the details it needs for that are saved.
+    uses_oauth: bool
+    can_connect: bool
+    auto_upload: bool
+    default_privacy: UploadPrivacy
+    default_description: str
+    privacy_note: str
+
+
+class AccountSettings(BaseModel):
+    """What the Publish page saves for a platform. A field left out or blank keeps its saved value."""
+    credentials: dict[str, str] = {}
+    auto_upload: bool | None = None
+    default_privacy: UploadPrivacy | None = None
+    default_description: str | None = Field(default=None, max_length=4000)
+
+
 class PipelineStepInfo(BaseModel):
     id: str
     label: str

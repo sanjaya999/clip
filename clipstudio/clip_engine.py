@@ -16,7 +16,8 @@ import requests
 import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi, YouTubeTranscriptApiException
 
-from .models import CaptionSegment, Platform, VideoInfo
+from . import captions as caption_files
+from .models import Aspect, CaptionSegment, EditSpec, Fit, Platform, VideoInfo
 from .sources import SourceRef
 
 CHAT_TRACKS = {"live_chat", "rechat"}
@@ -34,6 +35,9 @@ STREAM_FORMAT = "/".join([
 ])
 PREVIEW_SEGMENT_SECONDS = 10
 PREVIEW_HEIGHT = 480
+# A Studio export is never larger than this on its long side, so a 9:16 frame fitted around 1080p stays 1080x1920.
+EDIT_MAX_SIDE = 1920
+FADE_SECONDS = 0.4
 
 _VTT_TIME = r"(?:(\d+):)?(\d{1,2}):(\d{2})[.,](\d{3})"
 _VTT_CUE_TIMING = re.compile(rf"{_VTT_TIME}\s+-->\s+{_VTT_TIME}")
@@ -445,6 +449,126 @@ def cut_clip(source_video_path: str, start_time: float, end_time: float, output_
 def cut_remote_clip(media: RemoteMedia, start_time: float, end_time: float, output_path: str) -> str:
     """Cut a clip by seeking into the platform's streams, so only the clip's own bytes are fetched."""
     return _encode_clip(_remote_args(media, start_time), end_time - start_time, output_path)
+
+
+def _has_audio(path: Path) -> bool:
+    return bool(subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip())
+
+
+def media_duration(path: Path) -> float:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    return float(out or 0.0)
+
+
+def _even(value: float) -> int:
+    return max(2, int(round(value / 2)) * 2)
+
+
+def _frame_shape(src_w: int, src_h: int, aspect: Aspect, fit: Fit) -> tuple[float, float]:
+    """In source pixels: the largest `aspect` crop of the source, or the smallest `aspect` frame around it."""
+    if aspect is Aspect.SOURCE:
+        return float(src_w), float(src_h)
+    a, b = (int(n) for n in aspect.value.split(":"))
+    ratio = a / b
+    wider = src_w / src_h > ratio
+    if (fit is Fit.CROP) == wider:
+        return src_h * ratio, float(src_h)
+    return float(src_w), src_w / ratio
+
+
+def edit_frame(src_w: int, src_h: int, aspect: Aspect, fit: Fit) -> tuple[int, int]:
+    """The output size of a Studio export, never more than EDIT_MAX_SIDE on the long side."""
+    w, h = _frame_shape(src_w, src_h, aspect, fit)
+    scale = min(1.0, EDIT_MAX_SIDE / max(w, h))
+    return _even(w * scale), _even(h * scale)
+
+
+def _ffmpeg_color(hex_color: str) -> str:
+    return "0x" + hex_color[1:]
+
+
+def _fonts_dir_option() -> str:
+    # libass on Windows ffmpeg builds has no fontconfig setup, so point it at the system fonts the Studio offers.
+    fonts = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    return f":fontsdir={_filter_path(fonts)}" if sys.platform == "win32" and fonts.is_dir() else ""
+
+
+def edit_filters(spec: EditSpec, src_w: int, src_h: int, length: float, ass_file: Path | None) -> tuple[str, str | None]:
+    """The video and audio filter chains for a Studio export. Audio is None when the clip is muted."""
+    out_w, out_h = edit_frame(src_w, src_h, spec.aspect, spec.fit)
+    video: list[str] = []
+    if spec.aspect is not Aspect.SOURCE and spec.fit is Fit.CROP:
+        # Crop in source pixels first, then scale, like CSS object-fit: cover with object-position in the preview.
+        shape_w, shape_h = _frame_shape(src_w, src_h, spec.aspect, spec.fit)
+        crop_w, crop_h = min(_even(shape_w), src_w - src_w % 2), min(_even(shape_h), src_h - src_h % 2)
+        fx, fy = spec.focus_x / 100, spec.focus_y / 100
+        video.append(f"crop={crop_w}:{crop_h}:(iw-{crop_w})*{fx:.4f}:(ih-{crop_h})*{fy:.4f}")
+        video.append(f"scale={out_w}:{out_h}")
+    elif spec.aspect is not Aspect.SOURCE:
+        video.append(f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease:force_divisible_by=2")
+        video.append(f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:color={_ffmpeg_color(spec.background)}")
+    elif (out_w, out_h) != (src_w, src_h):
+        video.append(f"scale={out_w}:{out_h}")
+    if (spec.brightness, spec.contrast, spec.saturation) != (0.0, 1.0, 1.0):
+        video.append(f"eq=brightness={spec.brightness:.3f}:contrast={spec.contrast:.3f}:saturation={spec.saturation:.3f}")
+    if spec.border > 0:
+        thickness = max(1, round(spec.border / 100 * min(out_w, out_h)))
+        video.append(f"drawbox=x=0:y=0:w=iw:h=ih:color={_ffmpeg_color(spec.border_color)}:t={thickness}")
+    if ass_file is not None:
+        video.append(f"subtitles=filename={_filter_path(ass_file)}{_fonts_dir_option()}")
+    if spec.fade:
+        fade = min(FADE_SECONDS, length / 4)
+        video.append(f"fade=t=in:st=0:d={fade:.3f},fade=t=out:st={max(0.0, length - fade):.3f}:d={fade:.3f}")
+    video.append("setsar=1")
+
+    if spec.volume <= 0:
+        return ",".join(video), None
+    audio = [f"volume={spec.volume:.3f}"] if spec.volume != 1.0 else []
+    if spec.fade:
+        fade = min(FADE_SECONDS, length / 4)
+        audio.append(f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={max(0.0, length - fade):.3f}:d={fade:.3f}")
+    return ",".join(video), ",".join(audio) or "anull"
+
+
+def render_edit(input_path: Path, spec: EditSpec, output_path: Path) -> tuple[float, float]:
+    """Re-encode a clip with the Studio's trim, frame, look, captions and title.
+    Returns where the result starts in the input clip, and how long it is."""
+    src_w, src_h = _frame_size(input_path)
+    full = media_duration(input_path)
+    start = min(spec.trim_start, max(0.0, full - 0.1))
+    end = min(spec.trim_end or full, full)
+    if end - start < 0.1:
+        raise ValueError("The trimmed clip is shorter than a tenth of a second.")
+    length = end - start
+    out_w, out_h = edit_frame(src_w, src_h, spec.aspect, spec.fit)
+    lines = caption_files.clip_captions(spec.captions, start, end)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ass_file = None
+        if lines or spec.title.strip():
+            ass_file = Path(tmp) / "captions.ass"
+            ass_file.write_text(
+                caption_files.build_ass(
+                    lines, spec.caption_style, out_w, out_h,
+                    title=spec.title, title_style=spec.title_style, duration=length,
+                ),
+                encoding="utf-8",
+            )
+        video_filter, audio_filter = edit_filters(spec, src_w, src_h, length, ass_file)
+        has_audio = _has_audio(input_path)
+        audio_args = ["-c:a", "aac", "-b:a", "160k", "-af", audio_filter] if audio_filter and has_audio else ["-an"]
+        _run_ffmpeg([
+            "-ss", f"{start:.3f}", "-i", str(input_path), "-t", f"{length:.3f}",
+            "-vf", video_filter, *_h264_args(), *audio_args,
+            "-movflags", "+faststart", str(output_path),
+        ])
+    return round(start, 3), round(length, 3)
 
 
 def burn_hook(input_path: Path, text: str, output_path: Path) -> None:

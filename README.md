@@ -4,6 +4,27 @@ Cut short clips from YouTube, Twitch and Kick videos. Pick the range by hand, or
 
 Every exported clip is kept in a library. Send a clip into a pipeline from the editor's "Then send to" menu or from the Pipeline page, and follow each step there until it finishes. A pipeline's output is a new clip, so you can send it on to another pipeline. The first pipeline, Context hook, has an AI write one line from the clip's subtitles and draws it over the first 2 seconds.
 
+## Caption and finish clips in the Studio
+
+Open any clip from the Pipeline page with "Edit in Studio", or from the link the Editor shows after an export.
+
+- **Add captions automatically** places the video's own subtitles on the clip's timeline. A clip saved before its subtitles loaded fetches them from YouTube first. Twitch and Kick publish no subtitles, so write those captions with Add caption.
+- Edit each caption's words and times, split it at the playhead, join it with the next one, shift them all, or cut long lines into 2 to 6 words for short-form video.
+- Style the captions and an optional title: font, size, colours, outline or box, position, bold, italic and capitals, or start from one of the looks.
+- Reshape the clip to 9:16, 1:1, 4:5 or 16:9 by cropping (and choosing what to keep) or by fitting it inside a colour, add a border, trim it, and change brightness, contrast, saturation, volume and fades.
+
+The preview shows each change as the export will draw it. Export burns everything in with ffmpeg and adds the result to the library as a new clip.
+
+## Upload to YouTube, TikTok and Facebook
+
+The Publish page uploads a clip to the platforms that welcome automated posting through an official API: YouTube, TikTok and a Facebook Page. Under Accounts, save each platform's app details and choose Connect, or paste a token. They stay in `storage/clip_studio.db` and are never shown again in full. Tick "Upload every finished clip automatically" to send every Studio export and pipeline result to that account with its default privacy and description.
+
+Each account's card says what to create in the platform's developer console. YouTube and TikTok need a redirect URI, which the card shows. Until a platform reviews your app, uploads are private: YouTube keeps unverified projects' uploads private, and TikTok makes unaudited apps' posts visible only to you.
+
+## Desktop app
+
+`desktop/` wraps Clip Studio in an Electron app that bundles Python and ffmpeg, so it installs on Windows, macOS and Linux with nothing else. Tagging a release builds the installers on GitHub. See [desktop/README.md](desktop/README.md).
+
 ## Download or stream
 
 The menu next to "Load video" picks how the editor reads a video:
@@ -48,9 +69,10 @@ uv pip install --python .venv/bin/python pytest
 
 ## Layout
 
-- `clipstudio/` is the app: routes and the pipeline worker in `app.py`, pipelines in `pipelines.py`, and the editor and Pipeline pages in `static/`.
+- `clipstudio/` is the app: routes and the pipeline and upload workers in `app.py`, pipelines in `pipelines.py`, upload platforms in `uploads.py`, captions in `captions.py`, and the Editor, Pipeline, Studio and Publish pages in `static/`. `python -m clipstudio` serves it without `start.sh`.
+- `desktop/` is the Electron app and its release notes.
 - `tests/` holds the pytest suite.
-- `storage/` holds downloaded videos (Download mode only), exported clips, and a SQLite file with the clip library, the runs and saved AI settings. Git ignores its contents.
+- `storage/` holds downloaded videos (Download mode only), exported clips, and a SQLite file with the clip library, the runs, the uploads, saved AI settings and upload accounts. Git ignores its contents. Set `CLIP_STUDIO_STORAGE` to keep it somewhere else.
 
 ## Working with an AI agent
 

@@ -5,7 +5,7 @@ import {
 import { readAiPrefs, saveAiPrefs } from './ai-prefs.js';
 import { forgetWork, pageWasReloaded, readWork, saveWork } from './editor-work.js';
 import { countOf, escapeHtml, formatTime, renderNav, showMessage } from './ui.js';
-import { pipelineOptions, showActiveRunCount, trackRunUrl } from './widgets.js';
+import { pipelineOptions, showActiveRunCount, studioUrl, trackRunUrl } from './widgets.js';
 import { playSource, stopSource } from './stream-player.js';
 
 /**
@@ -688,7 +688,10 @@ async function exportClip() {
     if (pipeline) {
       await sendToPipeline(clip, pipeline);
     } else {
-      setStatus('Clip exported');
+      const link = document.createElement('a');
+      link.href = studioUrl(clip.clip_id);
+      link.textContent = 'Add captions in Studio';
+      loadStatus.replaceChildren('Clip exported.', link);
       downloadClip(clip);
     }
   } finally {

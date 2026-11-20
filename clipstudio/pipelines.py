@@ -95,8 +95,17 @@ PIPELINES: dict[str, Pipeline] = {
 }
 
 
-def execute(run: Run, ai: AIChoice, *, library: Library, clips_dir: Path, saved: SavedSettings) -> None:
-    """Run every step in order, saving the run after each change. The worker is the run's only writer."""
+def execute(
+    run: Run,
+    ai: AIChoice,
+    *,
+    library: Library,
+    clips_dir: Path,
+    saved: SavedSettings,
+    on_clip: Callable[[Clip], None] | None = None,
+) -> None:
+    """Run every step in order, saving the run after each change. The worker is the run's only writer.
+    `on_clip` gets the clip a finished run added to the library."""
     pipeline = PIPELINES[run.pipeline]
     clip = library.get_clip(run.input_clip_id)
     ctx = StepContext(
@@ -122,6 +131,8 @@ def execute(run: Run, ai: AIChoice, *, library: Library, clips_dir: Path, saved:
             return
         run.advance(detail)
         library.save_run(run)
+    if on_clip and run.output_clip_id:
+        on_clip(library.get_clip(run.output_clip_id))
 
 
 def _publish(ctx: StepContext, run: Run, library: Library, clips_dir: Path) -> str:

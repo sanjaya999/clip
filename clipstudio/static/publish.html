@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Publish · Clip Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="/css/publish.css">
+  <script type="module" src="/js/publish.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <span class="wordmark">Clip Studio</span>
+    <nav class="pages" data-nav aria-label="Pages"></nav>
+  </header>
+
+  <main class="workspace">
+    <section class="pane publish-pane" aria-labelledby="uploadHeading">
+      <h1 id="uploadHeading" class="pane-title">Upload a clip</h1>
+      <p id="pageError" class="pane-error" role="alert" hidden></p>
+
+      <form id="uploadForm" class="upload-form">
+        <div class="upload-pick">
+          <label class="control">
+            <span class="field-label">Clip</span>
+            <select id="uploadClip" class="field" required>
+              <option value="">Loading clips…</option>
+            </select>
+          </label>
+          <video id="uploadPreview" class="clip-preview" controls preload="metadata" hidden></video>
+        </div>
+        <div class="upload-fields">
+          <fieldset class="control">
+            <legend class="field-label">Upload to</legend>
+            <div id="platformChecks" class="platform-checks">
+              <p class="hint">Loading accounts…</p>
+            </div>
+          </fieldset>
+          <label class="control">
+            <span class="field-label">Title</span>
+            <input type="text" id="uploadTitle" class="field" maxlength="100" placeholder="The clip's hook or file name">
+          </label>
+          <label class="control">
+            <span class="field-label">Description</span>
+            <textarea id="uploadDescription" class="field" rows="3" maxlength="4000"></textarea>
+          </label>
+          <div class="control-pair">
+            <label class="control">
+              <span class="field-label">Tags</span>
+              <input type="text" id="uploadTags" class="field" placeholder="gaming, highlights">
+            </label>
+            <label class="control">
+              <span class="field-label">Who can see it</span>
+              <select id="uploadPrivacy" class="field">
+                <option value="private">Private</option>
+                <option value="unlisted">Unlisted</option>
+                <option value="public">Public</option>
+              </select>
+            </label>
+          </div>
+          <ul id="privacyNotes" class="privacy-notes"></ul>
+          <div class="upload-submit">
+            <button type="submit" id="uploadBtn" class="btn btn-primary">Upload</button>
+            <p id="uploadStatus" class="send-status" role="status"></p>
+          </div>
+        </div>
+      </form>
+
+      <div class="pane-head-title">
+        <h2 class="pane-title">Uploads</h2>
+        <button type="button" id="clearUploadsBtn" class="btn btn-sm" hidden>Clear finished</button>
+      </div>
+      <div id="uploadsList" class="upload-list">
+        <p class="empty">Loading uploads…</p>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <section class="pane accounts-pane" aria-labelledby="accountsHeading">
+        <h2 id="accountsHeading" class="pane-title">Accounts</h2>
+        <p class="hint">Credentials are saved only on this computer, in the same file as your AI keys, and never shown again in full.</p>
+        <div id="accountsList" class="account-list">
+          <p class="empty">Loading accounts…</p>
+        </div>
+      </section>
+    </aside>
+  </main>
+</body>
+</html>

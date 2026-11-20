@@ -83,4 +83,4 @@ def test_page_is_markup_only_with_the_shared_nav_mount(page):
 
 
 def test_pages_list_names_every_page():
-    assert PAGES == ["/", "/pipeline.html"]
+    assert PAGES == ["/", "/pipeline.html", "/studio.html", "/publish.html"]
